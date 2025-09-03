@@ -1,47 +1,44 @@
 pipeline {
-  agent any
-  environment {
-    REGISTRY = "docker.io"
-    REPO     = "fawadali203"   // <-- change this
-    IMAGE    = "hello-py"
-    TAG      = "${env.BUILD_NUMBER}"
+  agent {
+    kubernetes {
+      defaultContainer 'kaniko'
+      yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins/label: kaniko-agent
+spec:
+  serviceAccountName: jenkins
+  containers:
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:latest
+    command: ['cat']     # keep the container alive for Jenkins steps
+    tty: true
+    volumeMounts:
+    - name: docker-config
+      mountPath: /kaniko/.docker
+  volumes:
+  - name: docker-config
+    secret:
+      secretName: dockerhub-config
+"""
+    }
   }
+
   stages {
     stage('Checkout') {
-      steps { checkout([$class: 'GitSCM',
-        userRemoteConfigs: [[url: 'https://github.com/fawadali852/Jenkins.git']], // <-- change
-        branches: [[name: '*/main']]]) }
+      steps { checkout scm }
     }
-
-    stage('Build image') {
+    stage('Build & Push (Kaniko)') {
       steps {
-        sh 'docker build -t $REGISTRY/$REPO/$IMAGE:$TAG -t $REGISTRY/$REPO/$IMAGE:latest .'
-      }
-    }
-
-    stage('Smoke test') {
-      steps {
-        sh '''
-          cid=$(docker run -d -p 5000:5000 $REGISTRY/$REPO/$IMAGE:$TAG)
-          # give the app a moment to start
-          sleep 3
-          curl -sf http://localhost:5000 | grep -q "Hello, World" 
-          docker rm -f $cid
-        '''
-      }
-    }
-
-    stage('Push image') {
-      steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
-                                          usernameVariable: 'DOCKER_USER',
-                                          passwordVariable: 'DOCKER_PASS')]) {
-          sh '''
-            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin $REGISTRY
-            docker push $REGISTRY/$REPO/$IMAGE:$TAG
-            docker push $REGISTRY/$REPO/$IMAGE:latest
-          '''
-        }
+        sh """
+          /kaniko/executor \
+            --context=${WORKSPACE} \
+            --dockerfile=${WORKSPACE}/Dockerfile \
+            --destination=docker.io/fawadali203/hello-py:${BUILD_NUMBER} \
+            --destination=docker.io/fawadali203/hello-py:latest
+        """
       }
     }
   }
